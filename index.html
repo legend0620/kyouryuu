@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>きょうりゅうアドベンチャー</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(#c5efff, #fff5ce); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden;
+  }
+  #wrap {
+    width: min(100vw, 940px); aspect-ratio: 16 / 9; position: relative; border: 4px solid #2f3942;
+    border-radius: 20px; overflow: hidden; background: #fff; box-shadow: 0 18px 40px rgba(0,0,0,.24);
+  }
+  canvas { width: 100%; height: 100%; display: block; background: linear-gradient(#b9ebff 0%, #e7faff 56%, #98da73 57%, #59b84a 100%); }
+  #ui { position: absolute; inset: 0; pointer-events: none; }
+  .panel {
+    position: absolute; left: 14px; top: 12px; padding: 10px 14px; border-radius: 14px;
+    background: rgba(255,255,255,.86); font-weight: 900; color: #27343d; line-height: 1.52; box-shadow: 0 4px 0 rgba(0,0,0,.12);
+  }
+  .help {
+    position: absolute; right: 12px; bottom: 12px; padding: 10px 12px; border-radius: 12px;
+    background: rgba(255,255,255,.86); color: #263238; font-weight: 800; font-size: 14px; text-align: right;
+  }
+  #start {
+    pointer-events: auto; position: absolute; inset: 0; display: grid; place-items: center;
+    background: rgba(255,255,255,.68); text-align: center; padding: 20px;
+  }
+  #startInner {
+    background: rgba(255,255,255,.96); border: 4px solid #2d3b43; border-radius: 22px;
+    padding: 22px; width: min(92%, 560px); box-shadow: 0 12px 0 rgba(0,0,0,.15);
+  }
+  h1 { margin: 0 0 10px; font-size: clamp(26px, 5vw, 46px); }
+  p { margin: 8px 0; font-weight: 700; }
+  button {
+    margin-top: 14px; border: 0; border-radius: 999px; background: #34b85c; color: #fff; font-size: 20px;
+    font-weight: 900; padding: 12px 28px; cursor: pointer; box-shadow: 0 6px 0 #197a36;
+  }
+  button:active { transform: translateY(4px); box-shadow: 0 2px 0 #197a36; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="ui">
+    <div class="panel">
+      スコア：<span id="score">0</span><br>
+      にく：<span id="meatCount">0</span><br>
+      たいりょく：<span id="hp">3</span><br>
+      ふわふわ：<span id="float">0</span>%
+    </div>
+    <div class="help">
+      タップ / クリック / Space：ジャンプ<br>
+      空中で連打：ふわっと長く浮く<br>
+      M：BGM ON / OFF
+    </div>
+    <div id="start">
+      <div id="startInner">
+        <h1>きょうりゅうアドベンチャー</h1>
+        <p>きみの恐竜が大冒険！</p>
+        <p>岩・トゲ草・翼竜・隕石をよけながら、にくを集めよう！</p>
+        <p>空中で連続タップすると、ふわっと長く浮けます。</p>
+        <p>※BGMを使うときは、同じフォルダに <b>bgm.mp3</b> を入れてください。</p>
+        <button id="startBtn">ゲームスタート</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height, groundY = 410;
+  const scoreEl = document.getElementById("score");
+  const meatEl = document.getElementById("meatCount");
+  const hpEl = document.getElementById("hp");
+  const floatEl = document.getElementById("float");
+  const start = document.getElementById("start");
+  const startBtn = document.getElementById("startBtn");
+
+  const assetFiles = {
+    dino: "dino.png",
+    rockSmall: "rock_small.png",
+    rockBig: "rock_big.png",
+    thorn: "thorn.png",
+    ptero: "ptero.png",
+    meteor: "meteor.png",
+    meat: "meat.png",
+  };
+  const assets = {};
+  for (const [key, path] of Object.entries(assetFiles)) {
+    const img = new Image();
+    img.src = path;
+    assets[key] = img;
+  }
+
+  const bgm = new Audio("bgm.mp3");
+  bgm.loop = true;
+  bgm.volume = 0.35;
+  let bgmEnabled = true;
+  function playBGM() { if (bgmEnabled) bgm.play().catch(() => {}); }
+  function stopBGM() { bgm.pause(); }
+  function toggleBGM() { bgmEnabled = !bgmEnabled; bgmEnabled ? playBGM() : stopBGM(); }
+
+  let running = false, gameOver = false, last = 0, spawnTimer = 0, itemTimer = 0, bgX = 0, cloudX = 0;
+  const state = { score: 0, meat: 0, hp: 3, speed: 330 };
+  const dino = { x: 96, y: groundY, w: 250, h: 175, vy: 0, onGround: true, invincible: 0, floatPower: 0, maxFloatPower: 1.15 };
+  const obstacles = [], meats = [], dusts = [], stars = [];
+
+  function updateUI() {
+    scoreEl.textContent = Math.floor(state.score);
+    meatEl.textContent = state.meat;
+    hpEl.textContent = state.hp;
+    floatEl.textContent = Math.floor((dino.floatPower / dino.maxFloatPower) * 100);
+  }
+
+  function reset() {
+    state.score = 0; state.meat = 0; state.hp = 3; state.speed = 330;
+    dino.y = groundY; dino.vy = 0; dino.onGround = true; dino.invincible = 0; dino.floatPower = 0;
+    obstacles.length = 0; meats.length = 0; dusts.length = 0; stars.length = 0;
+    spawnTimer = 0.7; itemTimer = 1.2; bgX = 0; cloudX = 0; gameOver = false; running = true;
+    start.style.display = "none"; playBGM(); updateUI();
+  }
+
+  function jump() {
+    playBGM();
+    if (!running) return;
+    if (dino.onGround) {
+      dino.vy = -650; dino.onGround = false; dino.floatPower = 0.3;
+      for (let i = 0; i < 9; i++) {
+        dusts.push({ x: dino.x + 80 + Math.random() * 90, y: groundY + 56, r: 3 + Math.random() * 7, vx: -70 - Math.random() * 130, life: 0.45 });
+      }
+      return;
+    }
+    dino.floatPower = Math.min(dino.maxFloatPower, dino.floatPower + 0.22);
+    if (dino.vy > -120) { dino.vy = Math.min(dino.vy, 40); dino.vy -= 135; }
+  }
+
+  function rand(min, max) { return Math.random() * (max - min) + min; }
+  function rectHit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+  function getObstaclePool() {
+    const s = state.score;
+    return [
+      { kind: "rockSmall", weight: 4 },
+      { kind: "rockBig", weight: s >= 80 ? 3 : 0 },
+      { kind: "thorn", weight: s >= 150 ? 3 : 0 },
+      { kind: "ptero", weight: s >= 250 ? 3 : 0 },
+      { kind: "meteor", weight: s >= 400 ? 2 : 0 }
+    ].filter(x => x.weight > 0);
+  }
+
+  function chooseWeighted(pool) {
+    const total = pool.reduce((sum, p) => sum + p.weight, 0);
+    let r = Math.random() * total;
+    for (const p of pool) { r -= p.weight; if (r <= 0) return p.kind; }
+    return pool[0].kind;
+  }
+
+  function spawnObstacle() {
+    const kind = chooseWeighted(getObstaclePool());
+    const data = { kind, x: W + 30, y: 0, w: 80, h: 80, vx: state.speed, vy: 0, rotation: 0, spin: 0 };
+    if (kind === "rockSmall") { data.w = 72; data.h = 58; data.y = groundY + 102 - data.h; }
+    else if (kind === "rockBig") { data.w = 106; data.h = 96; data.y = groundY + 100 - data.h; }
+    else if (kind === "thorn") { data.w = 108; data.h = 80; data.y = groundY + 100 - data.h; }
+    else if (kind === "ptero") { data.w = 138; data.h = 86; data.y = rand(180, 290); }
+    else if (kind === "meteor") { data.w = 118; data.h = 95; data.y = rand(40, 150); data.vy = rand(40, 90); data.spin = rand(-1.2, 1.2); data.rotation = rand(-0.35, 0.35); }
+    obstacles.push(data);
+  }
+
+  function spawnMeat() { meats.push({ x: W + 50, y: rand(210, 305), w: 64, h: 50, bob: Math.random() * 10 }); }
+
+  function drawBackground(dt) {
+    bgX -= state.speed * 0.20 * dt; cloudX -= state.speed * 0.08 * dt;
+    if (bgX < -180) bgX += 180; if (cloudX < -320) cloudX += 320;
+
+    ctx.beginPath(); ctx.fillStyle = "#ffe27a"; ctx.arc(840, 76, 42, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,.85)";
+    for (let i = 0; i < 4; i++) {
+      const x = ((i * 300 + cloudX) % 1400) - 140, y = 72 + (i % 2) * 38;
+      ctx.beginPath(); ctx.arc(x, y, 28, 0, Math.PI * 2); ctx.arc(x + 32, y - 10, 34, 0, Math.PI * 2); ctx.arc(x + 65, y, 26, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.fillStyle = "#82cd7d";
+    ctx.beginPath();
+    ctx.moveTo(0, 300); ctx.lineTo(110, 205); ctx.lineTo(230, 300); ctx.lineTo(385, 185); ctx.lineTo(540, 300);
+    ctx.lineTo(700, 180); ctx.lineTo(860, 300); ctx.lineTo(960, 220); ctx.lineTo(960, 540); ctx.lineTo(0, 540); ctx.fill();
+
+    ctx.fillStyle = "#4faa46";
+    for (let x = bgX; x < W + 220; x += 180) {
+      ctx.beginPath(); ctx.arc(x + 20, 392, 20, 0, Math.PI * 2); ctx.arc(x + 48, 388, 22, 0, Math.PI * 2); ctx.arc(x + 76, 394, 18, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.fillStyle = "#5ab94a"; ctx.fillRect(0, groundY + 88, W, H - groundY);
+    ctx.fillStyle = "#2c8d3d";
+    for (let x = bgX; x < W + 180; x += 120) {
+      ctx.fillRect(x, groundY + 92, 72, 8); ctx.fillRect(x + 22, groundY + 120, 86, 7);
+    }
+
+    ctx.strokeStyle = "rgba(36,110,34,.35)"; ctx.lineWidth = 2;
+    for (let x = 0; x < W; x += 24) { ctx.beginPath(); ctx.moveTo(x, groundY + 102); ctx.lineTo(x + 4, groundY + 94 - (x % 3)); ctx.stroke(); }
+  }
+
+  function drawDust(dt) {
+    for (let i = dusts.length - 1; i >= 0; i--) {
+      const d = dusts[i]; d.x += d.vx * dt; d.life -= dt;
+      if (d.life <= 0) { dusts.splice(i, 1); continue; }
+      ctx.globalAlpha = Math.max(0, d.life / 0.45) * 0.45;
+      ctx.fillStyle = "#f3e3b5"; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawDino(t) {
+    const bob = dino.onGround ? Math.sin(t * 13) * 5 : 0;
+    const tilt = dino.onGround ? Math.sin(t * 9) * 0.02 : -0.08;
+    const flash = dino.invincible > 0 && Math.floor(t * 18) % 2 === 0;
+
+    ctx.save(); ctx.translate(dino.x + dino.w / 2, dino.y + dino.h / 2 + bob); ctx.rotate(tilt);
+    ctx.save(); ctx.globalAlpha = 0.18; ctx.fillStyle = "#000"; ctx.beginPath(); ctx.ellipse(24, 84, 95, 20, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    if (flash) ctx.globalAlpha = 0.45;
+    if (assets.dino.complete) ctx.drawImage(assets.dino, -dino.w / 2, -dino.h / 2, dino.w, dino.h);
+    else { ctx.fillStyle = "#56b547"; ctx.fillRect(-dino.w/2, -dino.h/2, dino.w, dino.h); }
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(34,80,30,.35)"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-130, 60); ctx.lineTo(-180, 52); ctx.moveTo(-128, 77); ctx.lineTo(-170, 85); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawObstacle(o, t) {
+    const map = { rockSmall: assets.rockSmall, rockBig: assets.rockBig, thorn: assets.thorn, ptero: assets.ptero, meteor: assets.meteor };
+    const img = map[o.kind];
+    let drawX = o.x, drawY = o.y;
+    if (o.kind === "ptero") drawY += Math.sin(t * 6 + o.x * 0.01) * 12;
+
+    if (o.kind === "meteor") {
+      ctx.save(); ctx.translate(drawX + o.w/2, drawY + o.h/2); ctx.rotate(o.rotation);
+      if (img.complete) ctx.drawImage(img, -o.w/2, -o.h/2, o.w, o.h); ctx.restore(); return;
+    }
+
+    if (img.complete) ctx.drawImage(img, drawX, drawY, o.w, o.h);
+    else { ctx.fillStyle = "#666"; ctx.fillRect(drawX, drawY, o.w, o.h); }
+  }
+
+  function drawMeat(m, t) {
+    const y = m.y + Math.sin(t * 5 + m.bob) * 8;
+    if (assets.meat.complete) ctx.drawImage(assets.meat, m.x, y, m.w, m.h);
+    else { ctx.fillStyle = "#e45"; ctx.fillRect(m.x, y, m.w, m.h); }
+  }
+
+  function spawnStar(x, y) {
+    for (let i = 0; i < 8; i++) stars.push({ x, y, vx: rand(-90, 90), vy: rand(-90, 90), life: 0.45, r: rand(2, 5) });
+  }
+
+  function drawStars(dt) {
+    for (let i = stars.length - 1; i >= 0; i--) {
+      const s = stars[i]; s.x += s.vx * dt; s.y += s.vy * dt; s.life -= dt;
+      if (s.life <= 0) { stars.splice(i, 1); continue; }
+      ctx.globalAlpha = Math.max(0, s.life / 0.45);
+      ctx.fillStyle = "#fff9a5"; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    }
+  }
+
+  function endGame() {
+    running = false; gameOver = true; stopBGM();
+    start.querySelector("h1").textContent = "ゲームオーバー";
+    start.querySelector("p").innerHTML = `スコア：${Math.floor(state.score)}　にく：${state.meat}<br>いろんな障害物をよけて、かなり進みました！`;
+    startBtn.textContent = "もう一回";
+    start.style.display = "grid";
+  }
+
+  function update(dt, t) {
+    state.score += dt * 10; state.speed += dt * 4; if (dino.invincible > 0) dino.invincible -= dt;
+
+    let gravity = 1550;
+    if (!dino.onGround && dino.floatPower > 0) {
+      gravity = 520; dino.floatPower = Math.max(0, dino.floatPower - dt); if (dino.vy > 180) dino.vy = 180;
+    }
+
+    dino.vy += gravity * dt; dino.y += dino.vy * dt;
+    if (dino.y >= groundY) { dino.y = groundY; dino.vy = 0; dino.onGround = true; dino.floatPower = 0; }
+
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) { spawnObstacle(); spawnTimer = Math.max(0.58, 1.05 + Math.random() * 0.7 - state.score * 0.0006); }
+
+    itemTimer -= dt;
+    if (itemTimer <= 0) { spawnMeat(); itemTimer = 1.25 + Math.random() * 1.2; }
+
+    const dinoBox = { x: dino.x + 58, y: dino.y + 18, w: dino.w - 116, h: dino.h - 56 };
+
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const o = obstacles[i]; o.x -= o.vx * dt; o.y += o.vy * dt; o.rotation += o.spin * dt;
+      if (o.x + o.w < -60 || o.y > H + 80) { obstacles.splice(i, 1); continue; }
+
+      let hit = { x: o.x + 8, y: o.y + 8, w: o.w - 16, h: o.h - 16 };
+      if (o.kind === "ptero") hit = { x: o.x + 12, y: o.y + 20, w: o.w - 28, h: o.h - 36 };
+      if (o.kind === "thorn") hit = { x: o.x + 10, y: o.y + 18, w: o.w - 20, h: o.h - 18 };
+      if (o.kind === "meteor") hit = { x: o.x + 22, y: o.y + 18, w: o.w - 44, h: o.h - 30 };
+
+      if (dino.invincible <= 0 && rectHit(dinoBox, hit)) {
+        state.hp--; dino.invincible = 1.15; spawnStar(o.x + o.w / 2, o.y + o.h / 2); obstacles.splice(i, 1);
+        if (state.hp <= 0) { endGame(); return; }
+      }
+    }
+
+    for (let i = meats.length - 1; i >= 0; i--) {
+      const m = meats[i]; m.x -= state.speed * dt;
+      if (m.x + m.w < -50) { meats.splice(i, 1); continue; }
+      const meatBox = { x: m.x + 4, y: m.y + 4, w: m.w - 8, h: m.h - 8 };
+      if (rectHit(dinoBox, meatBox)) {
+        state.meat++; state.score += 50; spawnStar(m.x + m.w / 2, m.y + m.h / 2); meats.splice(i, 1);
+      }
+    }
+
+    updateUI();
+  }
+
+  function draw(t, dt) {
+    ctx.clearRect(0, 0, W, H); drawBackground(dt);
+    for (const m of meats) drawMeat(m, t);
+    for (const o of obstacles) drawObstacle(o, t);
+    drawDust(dt); drawStars(dt); drawDino(t);
+    if (gameOver) { ctx.fillStyle = "rgba(0,0,0,.15)"; ctx.fillRect(0, 0, W, H); }
+  }
+
+  function loop(now) {
+    const t = now / 1000, dt = Math.min(0.033, (now - last) / 1000 || 0.016);
+    last = now; if (running) update(dt, t); draw(t, dt); requestAnimationFrame(loop);
+  }
+
+  startBtn.addEventListener("click", () => {
+    start.querySelector("h1").textContent = "きょうりゅうアドベンチャー";
+    start.querySelector("p").innerHTML = "きみの恐竜が大冒険！<br>岩・トゲ草・翼竜・隕石をよけながら、にくを集めよう！";
+    startBtn.textContent = "ゲームスタート";
+    reset();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.code === "ArrowUp") { e.preventDefault(); jump(); }
+    if (e.code === "KeyM") toggleBGM();
+  }, { passive: false });
+
+  canvas.addEventListener("pointerdown", jump);
+  document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+  updateUI();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
