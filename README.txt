@@ -23,7 +23,6 @@
 
 ■ BGMを追加したいとき
 index.html と同じ階層に bgm.mp3 を置いてください
-（このZIPには音楽ファイルは入っていません）
 
 例：
 index.html
